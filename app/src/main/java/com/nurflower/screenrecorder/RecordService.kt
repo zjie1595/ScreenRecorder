@@ -86,7 +86,6 @@ class RecordService : Service() {
         }
     }
 
-    @Suppress("DEPRECATION")
     private fun startVideoCapture() {
 
         mediaRecorder = MediaRecorder()
@@ -111,10 +110,9 @@ class RecordService : Service() {
 
         try {
             mediaRecorder?.prepare()
-        } catch (e: IllegalStateException) {
+        } catch (e: Exception) {
             e.printStackTrace()
-        } catch (e: IOException) {
-            e.printStackTrace()
+            Log.e(TAG, "录屏失败 ${e.message}")
         }
 
         val surface: Surface? = mediaRecorder?.surface
@@ -159,6 +157,7 @@ class RecordService : Service() {
 
 
     companion object {
+        private const val TAG = "录屏服务"
         private const val SERVICE_ID = 123
         private const val NOTIFICATION_CHANNEL_ID = "Screen Capture channel"
         const val ACTION_START = "RecordService:Start"
