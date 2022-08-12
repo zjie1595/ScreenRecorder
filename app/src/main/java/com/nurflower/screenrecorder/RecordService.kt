@@ -8,7 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.display.DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
 import android.hardware.display.VirtualDisplay
-import android.media.*
+import android.media.MediaRecorder
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -19,11 +19,14 @@ import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
 import android.widget.Toast
+import androidx.annotation.RequiresApi
 import androidx.core.app.NotificationCompat
+import java.io.File
 import java.io.IOException
+import java.util.*
 
 
-class RecordService: Service() {
+class RecordService : Service() {
 
     private lateinit var mediaProjectionManager: MediaProjectionManager
     private var mediaProjection: MediaProjection? = null
@@ -33,15 +36,25 @@ class RecordService: Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
-        startForeground(SERVICE_ID, NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID).build())
-        mediaProjectionManager = applicationContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            createNotificationChannel()
+        }
+        startForeground(
+            SERVICE_ID,
+            NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID).build()
+        )
+        mediaProjectionManager =
+            applicationContext.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
     }
 
+    @RequiresApi(Build.VERSION_CODES.O)
+    /**
+     * 必须先通过向 createNotificationChannel() 传递 NotificationChannel 的实例在系统中注册应用的通知渠道，然后才能在 Android 8.0 及更高版本上提供通知。
+     */
     private fun createNotificationChannel() {
         val serviceChannel = NotificationChannel(
             NOTIFICATION_CHANNEL_ID,
-            "Канал записи экрана",
+            "Screen recording channel",
             NotificationManager.IMPORTANCE_DEFAULT
         )
 
@@ -53,12 +66,17 @@ class RecordService: Service() {
         return if (intent != null) {
             when (intent.action) {
                 ACTION_START -> {
-                    mediaProjection = mediaProjectionManager.getMediaProjection(Activity.RESULT_OK, intent.getParcelableExtra(EXTRA_RESULT_DATA)!!) as MediaProjection
+                    mediaProjection = mediaProjectionManager.getMediaProjection(
+                        Activity.RESULT_OK,
+                        intent.getParcelableExtra(EXTRA_RESULT_DATA)!!
+                    ) as MediaProjection
+                    dst = intent.getStringExtra("dst")
                     startVideoCapture()
                     START_STICKY
                 }
                 ACTION_STOP -> {
                     stopVideoCapture()
+                    stopSelf()
                     START_NOT_STICKY
                 }
                 else -> throw IllegalArgumentException("Unexpected action received: ${intent.action}")
@@ -68,7 +86,8 @@ class RecordService: Service() {
         }
     }
 
-    private fun startVideoCapture(){
+    @Suppress("DEPRECATION")
+    private fun startVideoCapture() {
 
         mediaRecorder = MediaRecorder()
 
@@ -80,26 +99,15 @@ class RecordService: Service() {
         val displayWidth = metrics.widthPixels
         val displayHeight = metrics.heightPixels
 
-        mediaRecorder?.setAudioSource(MediaRecorder.AudioSource.MIC) // audio source from microphone
         mediaRecorder?.setVideoSource(MediaRecorder.VideoSource.SURFACE)
         mediaRecorder?.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
         mediaRecorder?.setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-        mediaRecorder?.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
         mediaRecorder?.setVideoEncodingBitRate(8 * 1000 * 1000)
         mediaRecorder?.setVideoFrameRate(15)
 
         mediaRecorder?.setVideoSize(displayWidth, displayHeight)
 
-        val videoDir: String = getExternalFilesDir(Environment.DIRECTORY_MOVIES)?.absolutePath.toString()
-        val timestamp = System.currentTimeMillis()
-
-        var orientation = "portrait"
-        if (displayWidth > displayHeight) {
-            orientation = "landscape"
-        }
-        val filePathAndName = videoDir + "/time_" + timestamp.toString() + "_mode_" + orientation + ".mp4"
-
-        mediaRecorder?.setOutputFile(filePathAndName)
+        mediaRecorder?.setOutputFile(dst)
 
         try {
             mediaRecorder?.prepare()
@@ -125,18 +133,26 @@ class RecordService: Service() {
         Log.d("RecordService", "Started recording")
 
     }
-    private fun stopVideoCapture(){
-        mediaRecorder?.stop()
-        mediaProjection?.stop()
-        mediaRecorder?.release()
-        mVirtualDisplay?.release()
-        Toast.makeText(this, "Stopped and saved", Toast.LENGTH_LONG).show()
+
+    private fun stopVideoCapture() {
+        if (mediaRecorder != null) {
+            mediaRecorder?.stop()
+            mediaProjection?.stop()
+            mediaRecorder?.release()
+            mVirtualDisplay?.release()
+            mediaRecorder = null
+            mediaProjection = null
+            mediaRecorder = null
+            mVirtualDisplay = null
+            Toast.makeText(this, "Stopped and saved", Toast.LENGTH_LONG).show()
+            onVideoRecorded?.invoke(dst)
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         stopVideoCapture()
-        stopSelf()
+        onVideoRecorded = null
     }
 
     override fun onBind(p0: Intent?): IBinder? = null
@@ -148,7 +164,31 @@ class RecordService: Service() {
         const val ACTION_START = "RecordService:Start"
         const val ACTION_STOP = "RecordService:Stop"
         const val EXTRA_RESULT_DATA = "RecordService:Extra:ResultData"
+        private var dst: String? = null
+        private var onVideoRecorded: ((String?) -> Unit)? = null
+
+        fun start(context: Context, recordIntent: Intent) {
+            val intent = Intent(context, RecordService::class.java).apply {
+                action = ACTION_START
+                putExtra(EXTRA_RESULT_DATA, recordIntent)
+                putExtra(
+                    "dst",
+                    File(
+                        context.getExternalFilesDir(Environment.DIRECTORY_MOVIES),
+                        "${UUID.randomUUID()}.mp4"
+                    ).absolutePath
+                )
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            }
+        }
+
+        fun stop(context: Context, onVideoRecorded: (String?) -> Unit) {
+            this.onVideoRecorded = onVideoRecorded
+            context.startService(Intent(context, RecordService::class.java).apply {
+                action = ACTION_STOP
+            })
+        }
     }
-
-
 }
